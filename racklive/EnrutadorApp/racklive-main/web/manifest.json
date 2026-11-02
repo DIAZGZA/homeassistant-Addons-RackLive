@@ -1,0 +1,15 @@
+{
+  "name": "Rack Live",
+  "short_name": "Rack Live",
+  "description": "Серверный шкаф и карта сети с живыми данными",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "icon.svg?v=28", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-192.png?v=28", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512.png?v=28", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512.png?v=28", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

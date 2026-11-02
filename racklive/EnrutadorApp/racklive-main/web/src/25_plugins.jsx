@@ -1,0 +1,746 @@
+/* Device plugins: Entware guide, AWG native (AmneziaWG from a .conf), installers (soon) */
+function PluginsTab({ device }) {
+  const toast = useToast();
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState('');
+  const [open, setOpen] = useState(() => new URLSearchParams(location.search).get('plugin'));      // ?…&tab=plugins&plugin=awg
+  const load = async () => {
+    setErr('');
+    try { const r = await api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { op: 'status' } }); setSt(r); }
+    catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, [device.id]);
+  if (err) return <Card><div style={{ color: 'var(--red)' }}>Не удалось связаться с роутером: {err}</div><Btn style={{ marginTop: 10 }} icon="refresh" onClick={load}>Повторить</Btn></Card>;
+  if (!st) return <div className="dim row" style={{ gap: 8 }}><span className="spin-dot" />Проверяю, что уже установлено на роутере…</div>;
+  return <>
+    <Hint id="plugins">Дополнения, которые ставятся прямо на это устройство. Rack Live сам проверяет, что уже есть, и подсказывает, чего не хватает.
+      Перед любым изменением спросит подтверждение и покажет журнал установки.</Hint>
+    {st.plugins.map(p => <PluginCard key={p.id} p={p} st={st} device={device} open={open === p.id} toggle={() => setOpen(open === p.id ? null : p.id)}
+      reload={load} openPlugin={setOpen} />)}
+  </>;
+}
+
+function PluginBadge({ p }) {
+  if (p.installed) return <span className="badge online"><Icon name="check" size={12} />{p.id === 'awg' ? 'подключено' : 'установлено'}</span>;
+  if (p.soon) return <span className="badge">скоро</span>;
+  if (p.kind === 'guide') return <span className="badge warning">не установлено</span>;
+  return null;
+}
+
+function Checks({ checks }) {
+  return <div className="checks">{checks.map((c, i) => <div key={i} className={'check' + (c.ok ? ' ok' : c.optional ? ' opt' : ' no')}>
+    <span className="check-ico"><Icon name={c.ok ? 'check' : c.optional ? 'other' : 'x'} size={13} stroke={2.4} /></span>
+    <span className="grow">{c.label}{c.optional && !c.ok ? <span className="dim3"> · по желанию</span> : null}</span>
+    {c.hint ? <span className="dim mono" style={{ fontSize: 11.5 }}>{c.hint}</span> : null}</div>)}</div>;
+}
+
+function PluginCard({ p, st, device, open, toggle, reload, openPlugin }) {
+  return <div className={'card plugin' + (open ? ' open' : '')}>
+    <button type="button" className="plugin-head" onClick={toggle}>
+      <div className="ico-circle"><Icon name={p.icon} size={18} /></div>
+      <div className="grow" style={{ minWidth: 0, textAlign: 'left' }}><div className="row" style={{ gap: 8 }}><b>{p.title}</b><PluginBadge p={p} /></div>
+        <div className="dim" style={{ fontSize: 12.5, lineHeight: 1.4, marginTop: 2 }}>{p.description}</div></div>
+      <Icon name="chevron" size={16} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .2s', flexShrink: 0 }} />
+    </button>
+    {open ? <div className="plugin-body">
+      {p.id === 'entware' ? <EntwareGuide p={p} reload={reload} /> : null}
+      {p.id === 'awg' ? <AwgPlugin p={p} device={device} reload={reload} openPlugin={openPlugin} /> : null}
+      {p.kind === 'installer' ? <InstallerPlugin p={p} device={device} reload={reload} openPlugin={openPlugin} /> : null}
+      {p.kind === 'modem' ? <ModemPlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'meshnode' ? <MeshNodePlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'portal' ? <PortalPlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'remote' ? <RemotePlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'panel' ? <PanelPlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'agents' ? <AgentsPlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'collector' ? <CollectorPlugin p={p} device={device} reload={reload} /> : null}
+      {p.kind === 'community' ? <CommunityPlugin p={p} device={device} reload={reload} /> : null}
+    </div> : null}
+  </div>;
+}
+
+function EntwareGuide({ p, reload }) {
+  return <>
+    <Checks checks={p.checks} />
+    {p.installed ? <div className="dim" style={{ fontSize: 13 }}>Entware установлен — можно ставить дополнения из каталога ниже.</div> : null}
+    <ol className="steps">
+      <li><b>Компоненты.</b> Веб-интерфейс роутера → «Управление» → «Общие настройки» (на новых прошивках — «Параметры системы») → <b>«Изменить набор компонентов»</b>.
+        Включите <b>«Поддержка открытых пакетов»</b> и <b>«Модули ядра подсистемы Netfilter»</b> → «Установить». Роутер перезагрузится.</li>
+      <li><b>Накопитель.</b> USB-флешка, отформатированная в <b>ext4</b>, или встроенная память, если роутер предлагает её в разделе OPKG.</li>
+      <li><b>Установщик.</b> На накопителе создайте папку <code>install</code> и положите в неё файл
+        {p.installer ? <> <a href={p.installer} target="_blank" rel="noreferrer">{p.installer.split('/').pop()}</a> (для вашего роутера — процессор {p.arch})</> : ' установщика Entware для процессора вашего роутера'}.</li>
+      <li><b>Запуск.</b> Раздел <b>OPKG</b> (в меню «Управление» или «Приложения») → выберите накопитель → «Сохранить». Установка идёт 1–3 минуты,
+        ход видно в «Диагностика» → «Системный журнал».</li>
+      <li><b>Вход.</b> SSH на порт <code>222</code>, логин <code>root</code>, пароль <code>keenetic</code> — сразу смените его командой <code>passwd</code>.</li>
+    </ol>
+    <Btn icon="refresh" onClick={reload}>Проверить снова</Btn>
+  </>;
+}
+
+function AwgPlugin({ p, device, reload, openPlugin }) {
+  const toast = useToast(); const confirm = useConfirm(); const { refresh } = useApp();
+  const comp = (p.checks || [])[0] || {};
+  const [name, setName] = useState('');
+  const [conf, setConf] = useState('');
+  const [prev, setPrev] = useState(null);
+  const [prevErr, setPrevErr] = useState('');
+  const [routing, setRouting] = useState(true);
+  const [domains, setDomains] = useState('');
+  const [domInfo, setDomInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [editDom, setEditDom] = useState(null);           // tunnel whose site list is being replaced
+  const fileRef = useRef(null);
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: 'awg', ...body } });
+  const preview = async (text, dom) => {
+    if (!text.trim()) { setPrev(null); setPrevErr(''); return; }
+    try { const r = await call({ op: 'preview', conf: text, domains: dom }); setPrev(r.preview); setPrevErr(''); setDomInfo(dom ? r : null); }
+    catch (e) { setPrev(null); setPrevErr(e.message); }
+  };
+  const onFile = async e => {
+    const f = e.target.files[0]; if (!f) return; const text = await f.text(); e.target.value = '';
+    setConf(text); if (!name) setName(f.name.replace(/\.conf$/i, '').slice(0, 40)); preview(text, domains);
+  };
+  const install = async () => {
+    const what = routing ? `Создать подключение «${name || 'AmneziaWG'}» и направить через него ${domInfo ? domInfo.domains : 'указанные'} сайтов?`
+      : `Создать подключение «${name || 'AmneziaWG'}» без маршрутизации? Трафик в него сам не пойдёт, пока вы не направите нужные сайты.`;
+    if (!(await confirm(what + ' Интернет при этом не прервётся.', { title: 'AWG native', ok: 'Создать' }))) return;
+    setBusy(true); setResult(null);
+    try { const r = await call({ op: 'install', conf, name, routing, domains: routing ? domains : '' }); setResult({ ...r, routing });
+      toast(r.message, !r.up); setConf(''); setPrev(null); setDomains(''); setDomInfo(null); setName(''); reload(); refresh(); }
+    catch (e) { setResult({ error: e.message }); toast(e.message, true); }
+    finally { setBusy(false); }
+  };
+  const component = async () => {
+    if (!(await confirm('Роутер скачает компонент WireGuard и перезагрузится — интернет пропадёт на 2–5 минут. Продолжить?', { danger: true, ok: 'Установить' }))) return;
+    try { const r = await call({ op: 'component' }); toast(r.message); } catch (e) { toast(e.message + ' — установите компонент вручную: «Изменить набор компонентов» → «WireGuard VPN»', true); }
+  };
+  const remove = async t => {
+    if (!(await confirm(`Удалить подключение «${t.name}» (${t.iface}) и его списки сайтов?`, { danger: true, ok: 'Удалить' }))) return;
+    try { const r = await call({ op: 'remove', iface: t.iface }); toast(r.message); reload(); refresh(); } catch (e) { toast(e.message, true); }
+  };
+  const tunnels = p.tunnels || [];
+  return <>
+    <Checks checks={p.checks || []} />
+    {!comp.ok ? <div className="row wrap"><Btn kind="primary" icon="download" onClick={component}>Установить компонент WireGuard</Btn>
+      <span className="dim3" style={{ fontSize: 12.5 }}>роутер перезагрузится</span></div> : null}
+    {tunnels.length ? <div>
+      <div className="card-title" style={{ marginBottom: 4 }}>Подключения WireGuard на роутере</div>
+      <div className="list">{tunnels.map(t => <div className="li" key={t.iface}>
+        <div className="ico-circle"><Icon name="shield" size={16} /></div>
+        <div className="grow" style={{ minWidth: 0 }}><b style={{ fontSize: 14 }}>{t.name}</b>
+          <div className="dim" style={{ fontSize: 12 }}>{t.iface}{t.managed ? ' · создано Rack Live' : ''}{t.managed ? (t.groups ? ` · ${t.domains} сайтов через туннель` : ' · без маршрутизации') : ''}</div></div>
+        {t.managed ? <><Btn size="sm" onClick={() => setEditDom(t)}>Сайты</Btn><Btn size="sm" kind="danger" icon="trash" onClick={() => remove(t)} title="Удалить" /></> : null}
+      </div>)}</div></div> : null}
+    {comp.ok ? <div className="awg-form">
+      <div className="card-title">Новое подключение из файла</div>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <Btn icon="upload" onClick={() => fileRef.current.click()}>Выбрать файл .conf</Btn>
+        <span className="dim3" style={{ fontSize: 12.5 }}>или вставьте текст конфига ниже</span>
+        <input ref={fileRef} type="file" accept=".conf,text/plain" style={{ display: 'none' }} onChange={onFile} />
+      </div>
+      <textarea className="input mono" rows={4} value={conf} placeholder={'[Interface]\nPrivateKey = …\nJc = 4 …\n[Peer]\nEndpoint = …'}
+        onChange={e => setConf(e.target.value)} onBlur={() => preview(conf, domains)} style={{ fontSize: 12 }} />
+      {prevErr ? <div style={{ color: 'var(--red)', fontSize: 13 }}>{prevErr}</div> : null}
+      {prev ? <div className="awg-prev">
+        <KV rows={[['Тип', prev.type], ['Сервер', <span className="mono">{prev.server}</span>], ['Адрес в туннеле', <span className="mono">{prev.address}</span>],
+          ['MTU', prev.mtu], ...(prev.psk ? [['Общий ключ (PSK)', 'есть']] : []),
+          ...(prev.dns ? [['DNS из конфига', <span className="dim">{prev.dns} — не используется, роутер оставит свой DNS</span>]] : [])]} />
+        {prev.awg3 ? <div className="dim3" style={{ fontSize: 12 }}>В конфиге есть поля AmneziaWG 3.x (защита заголовков) — прошивка роутера их не понимает, туннель будет работать без них (как AWG 1.0/2.0).</div> : null}
+        {prev.ipv6Skipped ? <div className="dim3" style={{ fontSize: 12 }}>IPv6-адрес из конфига пропущен — туннель будет работать по IPv4.</div> : null}
+      </div> : null}
+      <Field label="Название подключения"><input className="input" value={name} maxLength={40} placeholder="Например: AWG Нидерланды" onChange={e => setName(e.target.value)} /></Field>
+      <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={routing} onChange={setRouting} />
+        <div className="grow"><div>Маршрутизация по доменам</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>{routing ? 'Через туннель пойдут только сайты из списка ниже — для всех устройств в сети. Остальное как обычно.'
+            : 'Только создать подключение — трафик в него сам не пойдёт.'}</div></div></div>
+      {routing ? <Field label="Сайты, которые пойдут через туннель" hint={domInfo ? `Распознано: ${domInfo.domains}${domInfo.skipped.length ? ' · пропущено: ' + domInfo.skipped.join(', ') : ''}`
+        : 'По одному на строку: домены (youtube.com — со всеми поддоменами), IP или подсети (1.2.3.0/24). Можно вставить готовый список.'}>
+        <textarea className="input mono" rows={6} value={domains} placeholder={'youtube.com\ngooglevideo.com\nytimg.com'} style={{ fontSize: 12 }}
+          onChange={e => setDomains(e.target.value)} onBlur={() => conf.trim() && preview(conf, domains)} /></Field>
+        : <div className="awg-suggest"><Icon name="globe2" size={18} /><div className="grow">Для удобной маршрутизации — готовые списки сайтов, веб-панель, несколько туннелей — поставьте
+          <b> HydraRoute Neo</b>. <button type="button" className="linkbtn" onClick={() => openPlugin('hydraroute')}>Открыть плагин</button></div></div>}
+      <Btn kind="primary" busy={busy} disabled={!prev || (routing && !domains.trim())} onClick={install} style={{ padding: 12 }}>
+        {busy ? 'Создаю подключение…' : 'Создать подключение'}</Btn>
+    </div> : null}
+    {result ? <PluginResult r={result} openPlugin={openPlugin} /> : null}
+    {editDom ? <DomainsEditor t={editDom} call={call} onClose={() => setEditDom(null)} onDone={() => { setEditDom(null); reload(); }} /> : null}
+  </>;
+}
+
+/* one-click installers (HydraRoute Neo, AWG Manager): the authors' official script, run over SSH in Entware */
+function InstallerPlugin({ p, device, reload, openPlugin }) {
+  const toast = useToast(); const confirm = useConfirm(); const { refresh } = useApp();
+  const ssh = p.ssh || {};
+  const [cred, setCred] = useState({ port: ssh.port || 222, user: ssh.user || 'root', password: '' });
+  const [busy, setBusy] = useState('');
+  const [result, setResult] = useState(null);
+  const [opts, setOpts] = useState(() => Object.fromEntries((p.options || []).map(o => [o.id, o.on])));
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: p.id, ...opts, ...body } });
+  const saveSsh = async () => { setBusy('ssh');
+    try { const r = await call({ op: 'ssh', ...cred }); toast(r.message); setCred(c => ({ ...c, password: '' })); reload(); } catch (e) { toast(e.message, true); } finally { setBusy(''); } };
+  const run = async op => {
+    const text = op === 'remove' ? `Удалить ${p.title} с роутера? Его настройки будут удалены.`
+      : `Rack Live скачает официальный установщик ${p.title} (автор — ${p.author}) и запустит его в Entware. Это займёт 1–5 минут, интернет не прервётся. Продолжить?`;
+    if (!(await confirm(text, { title: p.title, ok: op === 'remove' ? 'Удалить' : p.installed ? 'Обновить' : 'Установить', danger: op === 'remove' }))) return;
+    setBusy(op); setResult(null);
+    try { const r = await call({ op }); setResult({ ...r, routing: true, up: r.ok, kept: true }); toast(r.message, !r.ok); reload(); refresh(); }
+    catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+    finally { setBusy(''); }
+  };
+  const required = (p.checks || []).filter(c => !c.optional && !/SSH/.test(c.label));
+  const ready = required.every(c => c.ok) && ssh.ok;
+  return <>
+    <Checks checks={p.checks || []} />
+    {!required.find(c => /Entware/.test(c.label)) || required.find(c => /Entware/.test(c.label)).ok ? null
+      : <div className="dim" style={{ fontSize: 13 }}>Сначала установите Entware — <button type="button" className="linkbtn" onClick={() => openPlugin('entware')}>инструкция</button></div>}
+    {!ssh.ok ? <div className="awg-form">
+      <div className="card-title">Доступ к Entware по SSH</div>
+      <div className="dim" style={{ fontSize: 13, lineHeight: 1.45 }}>Установка идёт командами внутри Entware. Укажите пароль root, который вы задали после установки Entware
+        (по умолчанию <code>keenetic</code>). Пароль хранится на сервере Rack Live и в браузер не передаётся.</div>
+      {ssh.error ? <div style={{ color: 'var(--red)', fontSize: 13 }}>{ssh.error}</div> : null}
+      <div className="row wrap" style={{ gap: 8, alignItems: 'flex-end' }}>
+        <div style={{ width: 90 }}><Field label="Порт"><input className="input" value={cred.port} onChange={e => setCred({ ...cred, port: e.target.value })} /></Field></div>
+        <div style={{ width: 120 }}><Field label="Логин"><input className="input" value={cred.user} onChange={e => setCred({ ...cred, user: e.target.value })} /></Field></div>
+        <div className="grow" style={{ minWidth: 150 }}><Field label="Пароль"><input className="input" type="password" value={cred.password} placeholder={ssh.set ? '•••••••• (сохранён)' : ''}
+          onChange={e => setCred({ ...cred, password: e.target.value })} autoComplete="off" /></Field></div>
+      </div>
+      <Btn kind="primary" busy={busy === 'ssh'} disabled={!cred.password && !ssh.set} onClick={saveSsh}>Проверить и сохранить</Btn>
+    </div> : null}
+    {p.installed ? <div className="plugin-result">
+      <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}><Icon name="check" size={18} />
+        <div className="grow"><b>{p.title}{p.version ? ' ' + p.version : ''} установлен.</b> Панель: <a href={p.url} target="_blank" rel="noreferrer">{p.url}</a>
+          <div className="dim" style={{ fontSize: 12.5 }}>Вход: {p.login}{p.singbox ? ' · ' + p.singbox.replace('sing-box version ', 'sing-box ') : ''}</div></div></div></div> : null}
+    {p.warning ? <div className="err-note" style={{ marginTop: 0 }}>{p.warning}</div> : null}
+    {(p.options || []).map(o => <div className="row" key={o.id} style={{ alignItems: 'flex-start' }}><Switch on={!!opts[o.id]} onChange={v => setOpts({ ...opts, [o.id]: v })} />
+      <div className="grow"><div>{o.label}</div>{o.hint ? <div className="dim3" style={{ fontSize: 12.5 }}>{o.hint}</div> : null}</div></div>)}
+    <div className="row wrap">
+      <Btn kind="primary" icon={p.installed ? 'refresh' : 'download'} busy={busy === 'install'} disabled={!ready || !!busy} onClick={() => run('install')}>
+        {busy === 'install' ? 'Устанавливаю… (до 5 минут)' : p.installed ? 'Обновить / переустановить' : 'Установить'}</Btn>
+      {p.installed && ssh.ok ? <Btn kind="danger" icon="trash" busy={busy === 'remove'} disabled={!!busy} onClick={() => run('remove')}>Удалить</Btn> : null}
+      {p.home ? <a className="btn" href={p.home} target="_blank" rel="noreferrer"><Icon name="link" size={16} />О проекте</a> : null}
+    </div>
+    {!ready && !p.installed ? <div className="dim3" style={{ fontSize: 12.5 }}>Кнопка станет активной, когда все пункты выше будут отмечены зелёным.</div> : null}
+    {result ? <PluginResult r={result} openPlugin={openPlugin} /> : null}
+  </>;
+}
+
+/* OpenWrt router as a Keenetic mesh access point */
+function MeshNodePlugin({ p, device, reload }) {
+  const toast = useToast(); const confirm = useConfirm();
+  const [busy, setBusy] = useState('');
+  const [result, setResult] = useState(null);
+  const [adv, setAdv] = useState(false);
+  const devHost = (device.fields && device.fields.host) || device.host || '';
+  const [dumbIp, setDumbIp] = useState('');
+  const [gw, setGw] = useState('');
+  const [sugg, setSugg] = useState('');                    // '' | 'loading' | 'done' | 'fail'
+  const toggleAdv = async on => {
+    setAdv(on);
+    if (!on || dumbIp || sugg === 'loading') return;
+    setSugg('loading');
+    try { const r = await call({ op: 'suggest_ip' }); if (r.ip) setDumbIp(r.ip); if (r.gw) setGw(r.gw); setSugg(r.ip ? 'done' : 'fail'); }
+    catch (e) { setSugg('fail'); }
+  };
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: p.id, ...body } });
+  const [stage, setStage] = useState('');
+  const [reset, setReset] = useState(null);           // {left} — обратный отсчёт полного сброса
+  useEffect(() => { if (!reset || reset.left <= 0) return;
+    const t = setTimeout(() => setReset(r => r && { left: r.left - 1 }), 1000); return () => clearTimeout(t); }, [reset]);
+  const pollJob = async id => {                      // установка идёт фоном — ждём её, обновляя строку состояния
+    for (let i = 0; i < 300; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      let j; try { j = await call({ op: 'job', job: id }); } catch (e) { continue; }
+      if (j.stage) setStage(j.stage);
+      if (j.done) return j.error ? { ok: false, error: j.error } : { ...(j.result || {}), ok: (j.result || {}).ok !== false };
+    }
+    return { ok: false, error: 'установка заняла слишком долго' };
+  };
+  const run = async op => {
+    if (op === 'remove') {
+      const ok = await confirm('Убрать точку Keenetic с этого роутера? Наша служба Mesh снимется, роутеру вернётся его собственный Wi-Fi. '
+        + 'Адрес роутера, root-пароль и остальные настройки сохранятся — он останется на связи. '
+        + 'В приложении Keenetic эту точку (станет офлайн) удалите вручную. Продолжить?',
+        { title: 'Убрать точку', ok: 'Убрать', danger: true });
+      if (!ok) return;
+      setBusy('remove'); setResult(null);
+      try { const r = await call({ op: 'remove' }); setResult({ ...r, up: r.ok, kept: true }); toast(r.message, !r.ok); reload(); }
+      catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+      finally { setBusy(''); }
+      return;
+    }
+    if (op === 'acquire') {
+      setBusy('acquire'); setResult(null); setStage('Запускаю захват…');
+      try {
+        let r = await call({ op: 'acquire' });
+        if (r.job) r = await pollJob(r.job);
+        setResult({ ...r, up: r.ok, kept: true }); toast(r.message || (r.ok ? 'Готово' : r.error) || '', !r.ok); reload();
+      } catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+      finally { setBusy(''); setStage(''); }
+      return;
+    }
+    if (op === 'factory') {
+      const ok = await confirm('Полный сброс до чистого OpenWrt? Это сотрёт на роутере ВСЕ настройки (адрес, пароль, Wi-Fi) и перезагрузит его. '
+        + 'После сброса роутер вернётся на заводской адрес 192.168.1.1 — а это адрес вашего Keenetic, поэтому СРАЗУ по окончании отсчёта '
+        + 'выньте кабель роутера из коммутатора, иначе он помешает всей сети. Продолжить?',
+        { title: 'Полный сброс', ok: 'Сбросить', danger: true });
+      if (!ok) return;
+      setBusy('factory'); setResult(null);
+      try { const r = await call({ op: 'factory' }); if (r.reset) setReset({ left: r.delay || 20 }); toast(r.message, !r.ok); }
+      catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+      finally { setBusy(''); }
+      return;
+    }
+    const text = 'Rack Live поставит на роутер небольшую службу (Python), и роутер появится в системе Keenetic как точка доступа. '
+      + (dumbIp ? `Роутер будет переведён в режим точки доступа с адресом ${dumbIp} — его веб-интерфейс потом будет на этом адресе. ` : '')
+      + 'Займёт 1–3 минуты. Продолжить?';
+    if (!(await confirm(text, { title: p.title, ok: p.installed ? 'Переустановить' : 'Сделать точкой' }))) return;
+    setBusy(op); setResult(null); setStage('Ставлю службу на роутер…');
+    try {
+      let r = await call({ op, dumbIp, gw });
+      if (r.job) r = await pollJob(r.job);                 // фоновая установка — дожидаемся
+      setResult({ ...r, up: r.ok, kept: true }); toast(r.message || (r.ok ? 'Готово' : r.error) || '', !r.ok); reload();
+    } catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+    finally { setBusy(''); setStage(''); }
+  };
+  if (reset) return <div className={'plugin-result' + (reset.left <= 0 ? ' bad' : ' warn')}>
+    <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+      <div style={{ fontSize: 34, fontWeight: 800, minWidth: 54, textAlign: 'center' }}>{reset.left > 0 ? reset.left : '0'}</div>
+      <div className="grow">{reset.left > 0
+        ? <><b>Роутер сбрасывается…</b><div style={{ fontSize: 13.5, lineHeight: 1.45 }}>Приготовьтесь. Когда отсчёт дойдёт до нуля — <b>выньте кабель роутера из коммутатора</b>.</div></>
+        : <><b style={{ color: 'var(--red)' }}>Выньте кабель роутера сейчас!</b><div style={{ fontSize: 13.5, lineHeight: 1.45 }}>Роутер стирает настройки и перезагружается в чистый OpenWrt (192.168.1.1).
+          Пока он подключён к коммутатору, он мешает сети. В приложении Keenetic удалите эту точку (офлайн).</div></>}</div>
+    </div>
+  </div>;
+  const required = (p.checks || []).filter(c => !c.optional);
+  const ready = required.every(c => c.ok);
+  return <>
+    {p.author ? <div className="dim3" style={{ fontSize: 12, marginBottom: 6 }}>Автор способа: {p.author}</div> : null}
+    <details className="guide" open={!p.installed}>
+      <summary>Как подготовить роутер</summary>
+      <ol style={{ margin: '6px 0 4px', paddingLeft: 20, fontSize: 13.5, lineHeight: 1.5 }}>
+        <li><b>Подсеть.</b> Посмотрите, какая подсеть у вашего основного роутера (например, 192.168.1.x), и поставьте новому роутеру такую же. Адрес выберите свободный из вашего пула.</li>
+        <li><b>Wi-Fi.</b> Включите вещание Wi-Fi в обоих диапазонах (2,4 и 5 ГГц), если они есть.</li>
+        <li><b>DNS.</b> Укажите IP-адрес вашего основного роутера.</li>
+        <li><b>Шлюз.</b> Тоже укажите IP-адрес основного роутера.</li>
+        <li><b>Сохраните</b> настройки и подключите кабель от вашей сети в <b>LAN-порт</b> нового роутера (не в WAN).</li>
+        <li>Добавьте роутер в Rack Live как OpenWrt, затем здесь нажмите «Сделать точкой Keenetic», а после установки — «Захватить в Keenetic».</li>
+      </ol>
+      <div className="dim3" style={{ fontSize: 12.5 }}>Поле «Broadcast» (широковещательный адрес) оставьте пустым — если там адрес роутера, новый роутер не увидит сеть.</div>
+    </details>
+    <Checks checks={p.checks || []} />
+    {p.installed ? <div className={'plugin-result' + (p.member ? '' : ' warn')}>
+      <div className="row" style={{ gap: 8, alignItems: 'flex-start' }}><Icon name={p.member ? 'check' : 'bulb'} size={18} />
+        <div className="grow"><b>{p.member ? 'Роутер работает точкой Keenetic.' : 'Служба запущена — осталось принять точку в Keenetic.'}</b>
+          {p.member && (p.ssids || []).length ? <div className="dim" style={{ fontSize: 12.5 }}>Раздаёт: {p.ssids.join(', ')}</div> : null}
+          {!p.member ? <div className="dim" style={{ fontSize: 12.5, lineHeight: 1.45 }}>Нажмите «Захватить в Keenetic» ниже — Rack Live сам примет точку (без приложения). Или примите вручную в приложении Keenetic → Wi-Fi-система.</div> : null}</div></div></div> : null}
+    {p.installed && !p.member ? <div className="row wrap" style={{ marginTop: 8 }}>
+      <Btn kind="primary" icon="wifi" busy={busy === 'acquire'} disabled={!!busy} onClick={() => run('acquire')}>{busy === 'acquire' ? 'Захватываю…' : 'Захватить в Keenetic'}</Btn>
+      <Btn icon="refresh" disabled={!!busy} onClick={reload}>Обновить статус</Btn>
+    </div> : null}
+    {busy === 'acquire' && stage ? <div className="dim row" style={{ gap: 8, fontSize: 12.5, marginTop: 6 }}><span className="spin-dot" />{stage}</div> : null}
+    {!p.installed ? <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={adv} onChange={toggleAdv} />
+      <div className="grow"><div>Перевести роутер в режим точки доступа</div>
+        <div className="dim3" style={{ fontSize: 12.5 }}>Включите, только если это НОВЫЙ роутер со своей отдельной сетью. Rack Live отключит на нём интернет-порт, DHCP и файрвол (адреса будет раздавать Keenetic)
+          и даст роутеру свободный адрес в вашей сети. {devHost ? `Этот роутер уже в вашей сети (${devHost}) — можно не включать, просто нажмите «Сделать точкой».` : 'Если роутер уже как точка доступа — не включайте.'}</div></div></div> : null}
+    {adv && !p.installed ? <div className="awg-form">
+      <div className="row wrap" style={{ gap: 8, alignItems: 'flex-end' }}>
+        <div className="grow" style={{ minWidth: 150 }}><Field label="Свободный адрес для роутера"><input className="input" value={dumbIp} placeholder={sugg === 'loading' ? 'ищу свободный…' : 'например 192.168.1.250'} onChange={e => setDumbIp(e.target.value)} /></Field></div>
+        <div style={{ width: 150 }}><Field label="Шлюз (обычно .1)"><input className="input" value={gw} placeholder="192.168.1.1" onChange={e => setGw(e.target.value)} /></Field></div>
+      </div>
+      <div className="dim3" style={{ fontSize: 12.5 }}>{sugg === 'loading' ? 'Rack Live ищет в сети свободный адрес…'
+        : sugg === 'done' ? 'Rack Live подобрал свободный адрес (проверил, что он не занят). Можно оставить так или вписать другой.'
+        : sugg === 'fail' ? 'Не удалось подобрать адрес автоматически — впишите свободный адрес вручную (который точно никем не занят).'
+        : 'Укажите свободный адрес в вашей сети — такой, который никому не выдан.'}</div>
+    </div> : null}
+    <div className="row wrap">
+      <Btn kind="primary" icon={p.installed ? 'refresh' : 'wifi'} busy={busy === 'install'} disabled={!ready || !!busy} onClick={() => run('install')}>
+        {busy === 'install' ? 'Устанавливаю…' : p.installed ? 'Переустановить' : 'Сделать точкой Keenetic'}</Btn>
+      {p.installed ? <Btn kind="danger" icon="trash" busy={busy === 'remove'} disabled={!!busy} onClick={() => run('remove')}>Убрать точку</Btn> : null}
+    </div>
+    {p.installed ? <div className="row wrap" style={{ marginTop: 2 }}>
+      <button type="button" className="linkbtn" style={{ color: 'var(--red)', fontSize: 12.5 }} disabled={!!busy} onClick={() => run('factory')}>Полный сброс до чистого OpenWrt (с перезагрузкой)</button>
+    </div> : null}
+    {busy === 'install' && stage ? <div className="dim row" style={{ gap: 8, fontSize: 12.5, marginTop: 6 }}><span className="spin-dot" />{stage}</div> : null}
+    {!ready && !p.installed ? <div className="dim3" style={{ fontSize: 12.5 }}>Кнопка станет активной, когда все пункты выше будут зелёными.</div> : null}
+    {result ? <PluginResult r={result} /> : null}
+  </>;
+}
+
+/* USB modem drivers: what is plugged in → suggested variant; any variant can be installed, removed, and another one tried */
+function ModemPlugin({ p, device, reload }) {
+  const toast = useToast(); const confirm = useConfirm(); const { refresh } = useApp();
+  const [busy, setBusy] = useState('');
+  const [result, setResult] = useState(null);
+  const run = async (m, op) => {
+    const text = op === 'remove' ? `Удалить драйверы варианта «${m.title}»? Общие пакеты, нужные другим вариантам, останутся.`
+      : `Установить «${m.title}»? Пакеты: ${m.packages.join(', ')}. Интернет не прервётся.`;
+    if (!(await confirm(text, { title: 'USB-модем', ok: op === 'remove' ? 'Удалить' : 'Установить', danger: op === 'remove' }))) return;
+    setBusy(m.id + op); setResult(null);
+    try { const r = await api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: 'modem', op, profile: m.id } });
+      setResult({ ...r, kept: true, routing: true, up: r.ok }); toast(r.message, !r.ok); reload(); refresh(); }
+    catch (e) { setResult({ error: e.message, kept: true }); toast(e.message, true); }
+    finally { setBusy(''); }
+  };
+  const sug = (p.profiles || []).find(m => m.suggested);
+  return <>
+    <div className="awg-prev" style={{ padding: '10px 12px', fontSize: 13.5, lineHeight: 1.45 }}>
+      {(p.usb || []).length ? <><b>Подключено к USB:</b> {p.usb.join('; ')}
+        {(p.drivers || []).length ? <div className="dim" style={{ fontSize: 12.5 }}>Работающие драйверы: {p.drivers.join(', ')}{(p.devs || []).length ? ' · ' + p.devs.join(', ') : ''}</div> : null}
+        <div style={{ marginTop: 4 }}>{sug ? <>Похоже, подойдёт: <b>{sug.title}</b>.</> : 'Определить тип модема не удалось — начните с первого варианта.'}</div></>
+        : 'К USB ничего не подключено. Вставьте модем и нажмите «Обновить» — Rack Live подскажет вариант.'}
+    </div>
+    <div className="list">{(p.profiles || []).map(m => <div className={'li modem-opt' + (m.suggested ? ' sug' : '')} key={m.id} style={{ alignItems: 'flex-start' }}>
+      <div className="grow" style={{ minWidth: 0 }}>
+        <div className="row wrap" style={{ gap: 6 }}><b style={{ fontSize: 14 }}>{m.title}</b>
+          {m.installed ? <span className="badge online">установлено</span> : null}{m.suggested ? <span className="badge info">подходит</span> : null}</div>
+        <div className="dim" style={{ fontSize: 12.5, lineHeight: 1.4 }}>{m.note}</div>
+        <div className="dim3 mono" style={{ fontSize: 11 }}>{m.packages.join(' · ')}</div></div>
+      {m.installed ? <Btn size="sm" kind="danger" icon="trash" busy={busy === m.id + 'remove'} disabled={!!busy} onClick={() => run(m, 'remove')}>Удалить</Btn>
+        : <Btn size="sm" kind={m.suggested ? 'primary' : ''} icon="download" busy={busy === m.id + 'install'} disabled={!!busy} onClick={() => run(m, 'install')}>Установить</Btn>}
+    </div>)}</div>
+    <div className="row"><Btn size="sm" icon="refresh" onClick={reload}>Обновить</Btn>
+      <span className="dim3" style={{ fontSize: 12.5 }}>Не заработало — удалите вариант и попробуйте следующий; иногда помогает переподключить модем.</span></div>
+    {result ? <PluginResult r={result} /> : null}
+  </>;
+}
+
+/* VPS panels (3x-ui, Remnawave): optional domain (waits for the A record), optional inbounds + test user; installs as a background job */
+function CopyRow({ k, v, mono = true }) {
+  const toast = useToast();
+  return <div className="copy-row"><span className="dim">{k}</span><span className={'grow ellipsis' + (mono ? ' mono' : '')} title={v}>{v}</span>
+    <Btn size="sm" icon="copy" title="Скопировать" onClick={() => { try { navigator.clipboard.writeText(v); toast('Скопировано'); } catch (e) { toast('Не удалось скопировать', true); } }} /></div>;
+}
+function PanelInfo({ info, title }) {
+  return <div className="plugin-result">
+    <div className="row" style={{ gap: 8, alignItems: 'flex-start', marginBottom: 8 }}><Icon name="check" size={18} /><b className="grow">{title} работает</b></div>
+    <div className="col" style={{ gap: 6 }}>
+      <div className="copy-row"><span className="dim">Панель</span><a className="grow ellipsis" href={info.url} target="_blank" rel="noreferrer">{info.url}</a></div>
+      <CopyRow k="Логин" v={info.user} /><CopyRow k="Пароль" v={info.password} />
+      {info.note ? <div className="dim3" style={{ fontSize: 12.5 }}>{info.note}</div> : null}
+      {(info.links || []).length ? <><div className="card-title" style={{ marginTop: 6 }}>Тестовый пользователь</div>
+        {info.links.map((l, i) => <CopyRow key={i} k={l.name} v={l.url} />)}
+        <div className="dim3" style={{ fontSize: 12.5 }}>Вставьте ссылку в клиент (v2rayN, Hiddify, Streisand, v2RayTun) — подключение должно заработать сразу.</div></> : null}
+    </div></div>;
+}
+
+function PanelPlugin({ p, device, reload }) {
+  const toast = useToast(); const confirm = useConfirm(); const { refresh } = useApp();
+  const [withDomain, setWithDomain] = useState(!!p.needsDomain);
+  const [domain, setDomain] = useState('');
+  const [inbounds, setInbounds] = useState(true);
+  const [dns, setDns] = useState(null);                       // {match, records, ip, domain}
+  const [waiting, setWaiting] = useState(false);
+  const [job, setJob] = useState(null);                       // {id, stage, done, error, result, t}
+  const [now, setNow] = useState(Date.now());
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: p.id, ...body } });
+  const checkDns = async () => { try { const r = await call({ op: 'dns', domain, ip: p.ip }); setDns(r); return r; } catch (e) { setDns({ error: e.message }); return null; } };
+  const startJob = async op => {
+    try { const r = await call({ op, withDomain, domain, inbounds: withDomain && inbounds }); setJob({ id: r.job, stage: 'Запуск…', done: false, t: Date.now() / 1000 }); }
+    catch (e) { toast(e.message, true); }
+  };
+  useEffect(() => {                                            // poll the background job
+    if (!job || job.done) return;
+    const t = setInterval(async () => { setNow(Date.now());
+      try { const j = await call({ op: 'job', job: job.id }); setJob(x => ({ ...x, ...j }));
+        if (j.done) { toast(j.error ? 'Не получилось: ' + j.error : (j.result && j.result.message) || 'Готово', !!j.error); reload(); refresh(); } } catch (e) { }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [job && job.id, job && job.done]);
+  useEffect(() => {                                            // waiting for the A record: check every 20 s, then install by itself
+    if (!waiting) return;
+    let alive = true;
+    const tick = async () => { const r = await checkDns(); if (!alive) return;
+      if (r && r.match) { setWaiting(false); toast('Домен заработал — начинаю установку'); startJob('install'); } };
+    const t = setInterval(tick, 20000); return () => { alive = false; clearInterval(t); };
+  }, [waiting]);
+  const install = async () => {
+    const what = `Установить ${p.title}${withDomain ? ` на ${domain}` : ''}? Будут поставлены ${withDomain ? 'nginx с сайтом-заглушкой, сертификат Let\'s Encrypt с автопродлением, ' : ''}`
+      + `${p.title}${withDomain && inbounds ? `, инбаунды VLESS TCP (${8443}) и XHTTP (${2053}) и тестовый пользователь` : ''}. Займёт ${p.id === 'remnawave' ? '5–15' : '2–5'} минут.`
+      + (withDomain ? ' Если домен ещё не указывает на сервер, Rack Live дождётся этого и начнёт сам.' : '');
+    if (!(await confirm(what, { title: p.title, ok: 'Установить' }))) return;
+    if (withDomain) {
+      const r = await checkDns(); if (!r) return;
+      if (!r.match) { setWaiting(true); return; }        // the 20-second loop starts the install when the A record appears
+    }
+    startJob('install');
+  };
+  const remove = async () => {
+    if (!(await confirm(`Удалить ${p.title} с сервера?${p.id === 'remnawave' ? ' База данных (пользователи, подписки) будет удалена безвозвратно.' : ' Пользователи и инбаунды будут удалены.'}`,
+      { title: p.title, ok: 'Удалить', danger: true }))) return;
+    startJob('remove');
+  };
+  const required = (p.checks || []).filter(c => !c.optional);
+  const ready = required.every(c => c.ok) && (!withDomain || domain.trim());
+  const running = job && !job.done;
+  return <>
+    <Checks checks={p.checks || []} />
+    {p.installed && p.info ? <PanelInfo info={p.info} title={p.title} /> : p.installed ? <div className="plugin-result"><Icon name="check" size={16} /> {p.title} уже установлен на сервере{p.version ? ' (' + p.version + ')' : ''} — не через Rack Live, поэтому данных для входа здесь нет.</div> : null}
+    {!p.installed ? <div className="awg-form">
+      <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={withDomain} onChange={v => !p.needsDomain && setWithDomain(v)} disabled={p.needsDomain} />
+        <div className="grow"><div>Установить с доменом{p.needsDomain ? ' (обязательно)' : ''}</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>nginx с сайтом-заглушкой, сертификат Let's Encrypt с автопродлением, панель — за HTTPS на вашем домене.
+            {!withDomain && !p.needsDomain ? ' Без домена панель получит сертификат на IP (продлевается сам).' : ''}</div></div></div>
+      {withDomain ? <Field label="Домен" hint={p.ip ? `Нужна A-запись: домен → ${p.ip} (IP этого сервера)` : 'Нужна A-запись на IP этого сервера'}>
+        <div className="row" style={{ gap: 8 }}><input className="input grow" value={domain} placeholder="vpn.example.com" onChange={e => { setDomain(e.target.value); setDns(null); setWaiting(false); }} />
+          <Btn onClick={checkDns} disabled={!domain.trim()}>Проверить DNS</Btn></div></Field> : null}
+      {dns ? dns.error ? <div style={{ color: 'var(--red)', fontSize: 13 }}>{dns.error}</div>
+        : dns.match ? <div className="check ok"><span className="check-ico"><Icon name="check" size={13} stroke={2.4} /></span>{dns.domain} → {dns.ip} — всё готово</div>
+        : <div className="err-note" style={{ marginTop: 0 }}><b>Домен пока не указывает на этот сервер.</b> {dns.records.length ? `Сейчас ${dns.domain} → ${dns.records.join(', ')}.` : `У ${dns.domain} нет A-записи.`}
+          {' '}У регистратора домена (reg.ru, Cloudflare…) создайте <b>A-запись</b>: имя <code>{dns.domain}</code>, значение <code>{dns.ip}</code>. Обычно начинает работать через 5–30 минут.</div> : null}
+      {waiting ? <div className="row" style={{ gap: 8, fontSize: 13.5 }}><span className="spin-dot" /><span className="grow">Жду, когда {dns && dns.domain} начнёт указывать на {p.ip} — проверяю каждые 20 секунд, установка начнётся сама. Можно закрыть окно и вернуться позже.</span>
+        <Btn size="sm" onClick={() => setWaiting(false)}>Отмена</Btn></div> : null}
+      <div className="row" style={{ alignItems: 'flex-start', opacity: withDomain ? 1 : .55 }}><Switch on={withDomain && inbounds} onChange={setInbounds} disabled={!withDomain} />
+        <div className="grow"><div>Создать инбаунды VLESS TCP + XHTTP и тестового пользователя</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>{withDomain ? 'VLESS TCP+TLS на порту 8443 и VLESS XHTTP+TLS на порту 2053 на сертификате домена; ссылки тестового пользователя покажу здесь.'
+            : 'Нужен домен: инбаунды используют его сертификат.'}</div></div></div>
+      <Btn kind="primary" icon="download" busy={running} disabled={!ready || running || waiting} onClick={install} style={{ padding: 12 }}>
+        {running ? 'Устанавливаю…' : waiting ? 'Жду DNS…' : 'Установить ' + p.title}</Btn>
+      {!ready && !running ? <div className="dim3" style={{ fontSize: 12.5 }}>{withDomain && !domain.trim() ? 'Укажите домен.' : 'Кнопка станет активной, когда все пункты выше будут отмечены зелёным.'}</div> : null}
+    </div> : null}
+    {running ? <div className="job"><span className="spin-dot" /><div className="grow"><b>{job.stage}</b>
+      <div className="dim3" style={{ fontSize: 12 }}>идёт {Math.max(0, Math.round(now / 1000 - job.t))} с · окно можно закрыть, установка продолжится на сервере Rack Live</div></div></div> : null}
+    {job && job.done ? (job.error ? <PluginResult r={{ error: job.error, kept: true, log: [] }} />
+      : <>{job.result && job.result.info ? <PanelInfo info={job.result.info} title={p.title} /> : <PluginResult r={{ ...job.result, kept: true, up: true }} />}
+        {job.result && (job.result.log || []).length ? <PluginResult r={{ message: `Журнал (${Math.round(job.dur / 60)} мин)`, log: job.result.log, kept: true, up: true }} /> : null}</>) : null}
+    <div className="row wrap">
+      {p.installed ? <Btn kind="danger" icon="trash" disabled={running} onClick={remove}>Удалить {p.title}</Btn> : null}
+      {p.home ? <a className="btn" href={p.home} target="_blank" rel="noreferrer"><Icon name="link" size={16} />О проекте</a> : null}
+    </div>
+  </>;
+}
+
+/* «Сборщик площадки»: a whole Rack Live in collector mode on this server / mini PC, installed over SSH (rackd/collector_install.py) */
+const COLLECTOR_LEVELS = [['view', 'Только смотреть'], ['actions', 'Смотреть и нажимать кнопки устройств'], ['terminal', 'Смотреть, нажимать кнопки и открывать терминал']];
+function CollectorInfo({ info, site, title }) {
+  const level = (COLLECTOR_LEVELS.find(l => l[0] === info.level) || [])[1];
+  return <div className="plugin-result">
+    <div className="row" style={{ gap: 8, alignItems: 'flex-start', marginBottom: 8 }}><Icon name="check" size={18} /><b className="grow">{title}</b></div>
+    <div className="col" style={{ gap: 6 }}>
+      <div className="copy-row"><span className="dim">Панель там</span><a className="grow ellipsis" href={info.url} target="_blank" rel="noreferrer">{info.url}</a></div>
+      {info.password ? <CopyRow k="Пароль администратора" v={info.password} /> : <div className="dim3" style={{ fontSize: 12.5 }}>Пароль администратора задан при прошлой установке — здесь он не показывается.</div>}
+      {!info.siteName ? <div className="dim3" style={{ fontSize: 12.5 }}>Данные на эту панель не присылаются. Включить: на панели машины «Инструменты → Удалённые площадки и агенты → Эта установка — сборщик» (ключ площадки берётся здесь же, в «Удалённые площадки»).</div> : null}
+      {info.siteName ? <div className="copy-row"><span className="dim">Площадка</span><span className="grow">{info.siteName}{site ? <> · {site.alive ? <span style={{ color: 'var(--green)' }}>на связи</span> : <span className="dim3">{site.last ? 'давно не отвечает' : 'ждём первого сообщения (до минуты)'}</span>}{site.devices ? ` · устройств: ${site.devices}` : ''}</> : null}</span></div> : null}
+      {info.version ? <div className="copy-row"><span className="dim">Версия</span><span className="grow">{info.version}</span></div> : null}
+      {level ? <div className="copy-row"><span className="dim">Управление отсюда</span><span className="grow">{level}</span></div> : null}
+      {info.tz ? <div className="copy-row"><span className="dim">Часовой пояс</span><span className="grow">{info.tz}</span></div> : null}
+      {info.ap ? <><div className="card-title" style={{ marginTop: 6 }}>Wi-Fi-точка для телефона</div>
+        <div className="row wrap" style={{ gap: 14, alignItems: 'flex-start' }}>
+          <div className="col grow" style={{ gap: 6, minWidth: 220 }}>
+            <CopyRow k="Сеть" v={info.ap.ssid} mono={false} /><CopyRow k="Пароль Wi-Fi" v={info.ap.password} />
+            <div className="copy-row"><span className="dim">Панель</span><span className="grow mono ellipsis">{info.ap.url}</span></div>
+            <div className="dim3" style={{ fontSize: 12.5 }}>Подключите телефон к этой сети (или наведите камеру на QR) и откройте адрес панели в браузере — он постоянный и не зависит от сетей клиентов.</div></div>
+          <div className="col" style={{ alignItems: 'center', gap: 4 }}><QrCode text={`WIFI:T:WPA;S:${wifiEsc(info.ap.ssid)};P:${wifiEsc(info.ap.password)};;`} size={130} /><span className="dim3" style={{ fontSize: 11.5 }}>QR: подключиться к сети</span></div></div></> : null}
+      {(info.warnings || []).length ? <div className="cam-warn">{info.warnings.join('. ')}</div> : null}
+      <div className="dim3" style={{ fontSize: 12.5 }}>Откройте панель по ссылке, войдите этим паролем — это обычный Rack Live: «Инструменты → Устройства → Сканировать сеть» найдёт всё в сети площадки, «Камеры» настроит камеры.
+        {info.siteName ? 'Все найденные устройства сами появятся на этой панели в «Инструменты → Удалённые площадки и агенты».' : ''}</div>
+    </div></div>;
+}
+
+function CollectorPlugin({ p, device, reload }) {
+  const toast = useToast(); const confirm = useConfirm(); const { refresh } = useApp();
+  const [name, setName] = useState(device.name || '');
+  const [server, setServer] = useState(p.serverUrl || '');
+  const [port, setPort] = useState(String(p.defaultPort || 9998));
+  const [level, setLevel] = useState('view');
+  const [insecure, setInsecure] = useState(false);
+  const [report, setReport] = useState(!p.rcos);              // a plain collector exists to report here; ReckController OS works on its own unless asked
+  const [dropSite, setDropSite] = useState(false);
+  const [tz, setTz] = useState(() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow'; } catch (e) { return 'Europe/Moscow'; } });
+  const [ap, setAp] = useState(true); const [apSsid, setApSsid] = useState('ReckController'); const [apPw, setApPw] = useState('');
+  const [job, setJob] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: p.id, ...body } });
+  const start = async (op, extra) => {
+    try { const r = await call({ op, ...extra }); setJob({ id: r.job, stage: 'Запуск…', done: false, t: Date.now() / 1000 }); }
+    catch (e) { toast(e.message, true); }
+  };
+  useEffect(() => {
+    if (!job || job.done) return;
+    const t = setInterval(async () => { setNow(Date.now());
+      try { const j = await call({ op: 'job', job: job.id }); setJob(x => ({ ...x, ...j }));
+        if (j.done) { toast(j.error ? 'Не получилось: ' + j.error : (j.result && j.result.message) || 'Готово', !!j.error); reload(); refresh(); } } catch (e) { }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [job && job.id, job && job.done]);
+  const required = (p.checks || []).filter(c => !c.optional);
+  const ready = required.every(c => c.ok) && (!report || server.trim()) && name.trim() && /^\d+$/.test(port);
+  const running = job && !job.done;
+  const install = async () => {
+    const local = report && /^https?:\/\/(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(server.trim());
+    if (!(await confirm(`Поставить ${p.rcos ? 'ReckController OS' : 'Rack Live'} на «${device.name}»? Rack Live по SSH сначала проверит связь, потом установит пакеты (python3, ssh, ping, curl), скачает себя с этой панели по домашней сети и создаст службу racklive на порту ${port}.`
+      + (report ? ` Данные будут приходить сюда (${server.trim()}) как площадка «${name.trim()}».` : ' Данные сюда не присылаются — машина работает сама по себе (включить можно потом на её панели).')
+      + (p.rcos ? ` Дополнительно: часовой пояс ${tz || 'без изменений'}, драйверы Wi-Fi и NetworkManager${ap ? `, Wi-Fi-точка «${apSsid}» с постоянным адресом` : ''}; включится режим разработчика на самой машине. Кабельная сеть и этот сеанс не затрагиваются.` : '')
+      + ` Займёт ${p.rcos ? '3–8' : '1–4'} минут.`
+      + (local ? ' Адрес для данных — из домашней сети: из других мест машина до него не достучится, для этого нужен домен.' : ''), { title: p.title, ok: 'Установить' }))) return;
+    start('install', { name: name.trim(), server: report ? server.trim() : '', port: +port, level, insecure: report && insecure, ...(p.rcos ? { tz: tz.trim(), ap, ssid: apSsid.trim(), apPassword: apPw } : {}) });
+  };
+  const remove = async () => {
+    if (!(await confirm(`Удалить ${p.rcos ? 'ReckController OS (вместе с Wi-Fi-точкой)' : 'сборщик'} с «${device.name}»? Служба и программа будут удалены с сервера, данные останутся в /var/lib/racklive.${dropSite && p.info ? ` Площадка «${p.info.siteName}» и её устройства исчезнут с этой панели.` : ''}`,
+      { title: p.title, ok: 'Удалить', danger: true }))) return;
+    start('remove', { removeSite: dropSite });
+  };
+  const info = (job && job.done && job.result && job.result.info) || p.info;
+  return <>
+    <Checks checks={p.checks || []} />
+    {info && p.installed ? <CollectorInfo info={info} site={p.site} title={p.rcos ? 'ReckController OS работает' : 'Сборщик работает'} />
+      : p.installed ? <div className="plugin-result"><Icon name="check" size={16} /> Rack Live уже стоит на этом сервере{p.version ? ' (' + p.version + ')' : ''} — не через плагин, поэтому данных для входа здесь нет.</div> : null}
+    {!p.installed ? <div className="awg-form">
+      <Field label={p.rcos ? 'Название машины' : 'Название площадки'} hint={p.rcos ? 'Так она будет называться в своей панели (и здесь, если включить отправку данных).' : 'Так она будет называться на этой панели: например «Квартира Ивановых» или «Офис».'}>
+        <input className="input" value={name} onChange={e => setName(e.target.value)} /></Field>
+      <Field label="Порт панели на машине" hint="По этому порту откроется её собственная панель."><input className="input mono" style={{ maxWidth: 120 }} value={port} onChange={e => setPort(e.target.value.replace(/\D/g, ''))} /></Field>
+      <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={report} onChange={setReport} />
+        <div className="grow"><div>Присылать данные на эту панель</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>Rack Live скачается на машину с этой панели сам, по домашней сети — адрес вводить не нужно. Этот переключатель — чтобы машина и из других мест (у клиентов) присылала сюда, что видит; для этого нужен домен.
+            {p.rcos ? ' Можно не включать: машина полностью работает сама, а отправку данных можно включить позже на её панели.' : ''}</div></div></div>
+      {report ? <>
+        <Field label="Адрес этой панели в интернете" hint={p.serverUrl ? 'Взят из «Настройки → Приложения».' : 'Домен вида https://racklive.example.com — создать его можно в «Настройки → Приложения».'}>
+          <input className="input mono" value={server} placeholder="https://racklive.example.com" onChange={e => setServer(e.target.value)} /></Field>
+        <Field label="Управление отсюда"><select className="input" value={level} onChange={e => setLevel(e.target.value)}>
+          {COLLECTOR_LEVELS.map(l => <option key={l[0]} value={l[0]}>{l[1]}</option>)}</select></Field></> : null}
+      {p.rcos ? <>
+        <Field label="Часовой пояс машины" hint="Например Europe/Moscow, Asia/Tbilisi. Подставлен часовой пояс вашего браузера."><input className="input mono" value={tz} onChange={e => setTz(e.target.value)} /></Field>
+        <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={ap} onChange={setAp} />
+          <div className="grow"><div>Своя Wi-Fi-точка для телефона</div>
+            <div className="dim3" style={{ fontSize: 12.5 }}>Машина раздаёт сеть с постоянным адресом (не пересекается с сетями клиентов): подключаетесь телефоном и открываете её панель. Нужен Wi-Fi-адаптер с режимом точки доступа.</div></div></div>
+        {ap ? <div className="row wrap" style={{ gap: 8 }}>
+          <Field label="Название сети"><input className="input" value={apSsid} onChange={e => setApSsid(e.target.value)} /></Field>
+          <Field label="Пароль Wi-Fi" hint="Пусто — придумается сам и будет показан после установки."><input className="input mono" value={apPw} onChange={e => setApPw(e.target.value)} placeholder="придумается сам" /></Field></div> : null}</> : null}
+      {report && /^https:/.test(server.trim()) ? <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={insecure} onChange={setInsecure} />
+        <div className="grow"><div>Не проверять сертификат этой панели</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>Только для самоподписанного сертификата. С обычным доменом оставьте выключенным.</div></div></div> : null}
+      <Btn kind="primary" icon="download" busy={running} disabled={!ready || running} onClick={install} style={{ padding: 12 }}>{running ? 'Устанавливаю…' : p.rcos ? 'Установить ReckController OS' : 'Установить сборщик'}</Btn>
+      {!ready && !running ? <div className="dim3" style={{ fontSize: 12.5 }}>{report && !server.trim() ? 'Укажите адрес этой панели в интернете или выключите отправку данных.' : 'Кнопка станет активной, когда все пункты выше будут отмечены зелёным.'}</div> : null}
+    </div> : null}
+    {running ? <div className="job"><span className="spin-dot" /><div className="grow"><b>{job.stage}</b>
+      <div className="dim3" style={{ fontSize: 12 }}>идёт {Math.max(0, Math.round(now / 1000 - job.t))} с · окно можно закрыть, установка продолжится</div></div></div> : null}
+    {job && job.done ? (job.error ? <PluginResult r={{ error: job.error, kept: true, log: [] }} />
+      : (job.result && (job.result.log || []).length ? <PluginResult r={{ message: `Журнал (${Math.round(job.dur / 60)} мин)`, log: job.result.log, kept: true, up: true }} /> : null)) : null}
+    <div className="row wrap">
+      {p.installed ? <Btn kind="danger" icon="trash" disabled={running} onClick={remove}>{p.rcos ? 'Удалить ReckController OS' : 'Удалить сборщик'}</Btn> : null}
+      {p.installed && p.info ? <div className="row" style={{ gap: 8 }}><Switch on={dropSite} onChange={setDropSite} /><span className="dim" style={{ fontSize: 13 }}>вместе с площадкой на этой панели</span></div> : null}
+    </div>
+  </>;
+}
+
+/* AI agents on a server: Claude Code (+ Remote Control, autostart, «new chat»), Codex, Gemini CLI, OpenCode, Aider (rackd/agents.py) */
+function AgentsPlugin({ p, device, reload }) {
+  const toast = useToast(); const confirm = useConfirm();
+  const cfg = p.config || {};
+  const [sel, setSel] = useState(() => new Set(p.agents.some(a => a.installed) ? [] : ['claude']));
+  const [rc, setRc] = useState(p.helper ? !!cfg.rc : true);
+  const [auto, setAuto] = useState(p.helper ? !!cfg.auto : true);
+  const [name, setName] = useState(cfg.name || device.name || 'server');
+  const [model, setModel] = useState(cfg.model || '');
+  const [auth, setAuth] = useState(cfg.auth === 'key' ? 'key' : 'sub');
+  const [apiKey, setApiKey] = useState('');
+  const [keys, setKeys] = useState({ codex: '', gemini: '' });
+  const [chat, setChat] = useState('');
+  const [job, setJob] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const [term, setTerm] = useState(null);                   // '&run=agent-setup' | '&run=agent-attach&session=…'
+  const call = body => api(`/api/devices/${device.id}/plugins`, { method: 'POST', body: { plugin: 'agents', ...body } });
+  const claudeOn = sel.has('claude') || p.agents.find(a => a.id === 'claude').installed;
+  const useKey = auth === 'key' && !rc;
+  const toggle = id => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const payload = () => ({ agents: [...sel], claude: { rc, auto, name, model, auth: useKey ? 'key' : 'sub', apiKey }, keys });
+  const start = async op => {
+    try { const r = await call(op === 'install' ? { op, ...payload() } : { op }); setJob({ id: r.job, stage: 'Запуск…', done: false, t: Date.now() / 1000 }); }
+    catch (e) { toast(e.message, true); }
+  };
+  useEffect(() => {
+    if (!job || job.done) return;
+    const t = setInterval(async () => { setNow(Date.now());
+      try { const j = await call({ op: 'job', job: job.id }); setJob(x => ({ ...x, ...j }));
+        if (j.done) { toast(j.error ? 'Не получилось: ' + j.error : (j.result && j.result.message) || 'Готово', !!j.error); setApiKey(''); setKeys({ codex: '', gemini: '' }); setSel(new Set()); reload(); } } catch (e) { }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [job && job.id, job && job.done]);
+  const quick = async (body, ok) => { try { const r = await call(body); toast(r.message || ok); reload(); } catch (e) { toast(e.message, true); } };
+  const remove = async a => {
+    if (!(await confirm(`Удалить ${a.title} с сервера?${a.id === 'claude' ? ' Вместе с ним уберу команду racklive-agent, автозапуск и сохранённые ключи; вход в аккаунт и история чатов Claude останутся в папке ~/.claude.' : ''}`,
+      { title: a.title, ok: 'Удалить', danger: true }))) return;
+    try { const r = await call({ op: 'remove', agent: a.id }); setJob({ id: r.job, stage: 'Удаление…', done: false, t: Date.now() / 1000 }); } catch (e) { toast(e.message, true); }
+  };
+  const running = job && !job.done;
+  const loggedIn = /logged in|signed in|authenticated|email|account/i.test(p.claudeAuth || '') && !/not logged|not signed|no auth|not authenticated/i.test(p.claudeAuth || '');
+  const needSetup = rc && claudeOn && !loggedIn;
+  const noRoot = (p.checks || []).find(c => c.label.startsWith('Вход под root'));
+  return <>
+    <Checks checks={p.checks || []} />
+    <div className="card-title" style={{ marginTop: 6 }}>Что установить</div>
+    {p.agents.map(a => <div key={a.id} className="row" style={{ gap: 10, padding: '6px 0', alignItems: 'center' }}>
+      <Switch on={a.installed || sel.has(a.id)} disabled={a.installed || running} onChange={() => toggle(a.id)} />
+      <div className="grow" style={{ minWidth: 0 }}><b>{a.title}</b> <span className="dim3" style={{ fontSize: 12.5 }}>{a.by}{a.installed ? ` · установлен${a.version ? ' ' + a.version : ''}` : ''}</span></div>
+      <a className="btn sm" href={a.home} target="_blank" rel="noreferrer" title="О проекте"><Icon name="link" size={14} /></a>
+      {a.installed ? <Btn size="sm" kind="danger" icon="trash" disabled={running} onClick={() => remove(a)} /> : null}
+    </div>)}
+    {claudeOn ? <div className="awg-form" style={{ marginTop: 8 }}>
+      <div className="card-title">Claude Code</div>
+      <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={rc} onChange={setRc} />
+        <div className="grow"><div>Remote Control — управлять с телефона и из браузера</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>Сессия появится в приложении Claude и на claude.ai/code. Работает только при входе по подписке Pro / Max / Team — ключ API для этого не подходит.</div></div></div>
+      <div className="row" style={{ alignItems: 'flex-start' }}><Switch on={auto} onChange={setAuto} />
+        <div className="grow"><div>Автозапуск после перезагрузки сервера</div>
+          <div className="dim3" style={{ fontSize: 12.5 }}>{noRoot && !noRoot.ok ? 'Через cron @reboot.' : 'Службой systemd.'} Новые чаты тоже запоминаются и поднимаются сами.</div></div></div>
+      <Field label="Название сессии" hint="Так она будет называться в приложении Claude"><input className="input" value={name} onChange={e => setName(e.target.value)} /></Field>
+      <Field label="Модель"><select className="input" value={model} onChange={e => setModel(e.target.value)}>{p.models.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+      <Field label="Как входить" hint={rc ? 'С Remote Control — только подписка (вход один раз кнопкой ниже).' : undefined}>
+        <select className="input" value={useKey ? 'key' : 'sub'} disabled={rc} onChange={e => setAuth(e.target.value)}>
+          <option value="sub">Подписка claude.ai (вход один раз)</option><option value="key">Ключ API (платишь за токены)</option></select></Field>
+      {useKey ? <Field label="Ключ API Anthropic" hint={(cfg.keys || []).includes('ANTHROPIC_API_KEY') ? 'Ключ уже сохранён на сервере. Оставьте пустым, чтобы не менять.' : 'Сохраняется только на сервере в ~/.racklive-agents/env (доступ 600), Rack Live его не хранит.'}>
+        <input className="input" type="password" value={apiKey} autoComplete="off" placeholder="sk-ant-…" onChange={e => setApiKey(e.target.value)} /></Field> : null}
+    </div> : null}
+    {['codex', 'gemini'].filter(id => sel.has(id) || p.agents.find(a => a.id === id).installed).map(id => <Field key={id} label={`Ключ ${id === 'codex' ? 'OpenAI (Codex)' : 'Gemini'} — по желанию`}
+      hint={(cfg.keys || []).includes(id === 'codex' ? 'OPENAI_API_KEY' : 'GEMINI_API_KEY') ? 'Ключ уже сохранён на сервере.' : 'Можно войти и внутри программы.'}>
+      <input className="input" type="password" value={keys[id]} autoComplete="off" onChange={e => setKeys({ ...keys, [id]: e.target.value })} /></Field>)}
+    <div className="row wrap" style={{ marginTop: 8 }}>
+      <Btn kind="primary" icon="download" busy={running} disabled={running || (!sel.size && !claudeOn)} onClick={async () => {
+        if (sel.size && !(await confirm(`Установить на «${device.name}»: ${[...sel].map(id => p.agents.find(a => a.id === id).title).join(', ')}? Rack Live по SSH поставит программы${claudeOn ? ', настроит автозапуск и команду racklive-agent' : ''}. Займёт несколько минут.`, { title: 'ИИ-агенты', ok: 'Установить' }))) return;
+        start('install'); }}>{running ? 'Работаю…' : sel.size ? 'Установить' : 'Сохранить настройки'}</Btn>
+      {needSetup ? <Btn icon="terminal" disabled={running} onClick={() => setTerm('&run=agent-setup')}>Войти и запустить</Btn> : null}
+      {needSetup && sshTarget(device) ? <Btn disabled={running} onClick={() => { copyText('racklive-agent setup'); toast('Команда «racklive-agent setup» скопирована — вставьте её в Termius после входа'); openInTermius(sshTarget(device), () => { }); }}>Войти через Termius</Btn> : null}
+      {p.helper && claudeOn ? <Btn icon="refresh" disabled={running} onClick={() => quick({ op: 'restart' }, 'Перезапущено')}>Перезапустить сессии</Btn> : null}
+    </div>
+    {needSetup ? <div className="err-note" style={{ marginTop: 8 }}><b>Нужен один вход в аккаунт Claude.</b> Нажмите «Войти и запустить»: откроется терминал сервера, он покажет ссылку — откройте её на телефоне, войдите и вставьте код. Потом пройдите первые вопросы Claude Code (Enter), ответьте «да» на доверие к папке и Remote Control и наберите <code>/exit</code> — чат продолжится в фоне и после перезагрузки.
+      Код из браузера вставляется кнопкой «Вставить» в терминале. Или в Termius («Войти через Termius» — команда <code>racklive-agent setup</code> уже будет скопирована). Это нужно один раз; дальше сессия сама поднимается после перезагрузки.</div> : null}
+    {running ? <div className="job"><span className="spin-dot" /><div className="grow"><b>{job.stage}</b>
+      <div className="dim3" style={{ fontSize: 12 }}>идёт {Math.max(0, Math.round(now / 1000 - job.t))} с · окно можно закрыть, работа продолжится</div></div></div> : null}
+    {job && job.done ? (job.error ? <PluginResult r={{ error: job.error, kept: true, log: [] }} /> : <PluginResult r={{ ...job.result, kept: true, up: true }} />) : null}
+    {p.helper ? <>
+      <div className="card-title" style={{ marginTop: 12 }}>Чаты</div>
+      {(p.sessions || []).length ? p.sessions.map(s => <div key={s.name} className="row" style={{ gap: 8, padding: '4px 0' }}>
+        <div className="grow ellipsis"><b>{s.name.replace(/^rl-c-/, '').replace(/^rl-main$/, 'основная сессия')}</b> <span className="dim3" style={{ fontSize: 12 }}>{s.name}</span></div>
+        <Btn size="sm" icon="terminal" onClick={() => setTerm('&run=agent-attach&session=' + encodeURIComponent(s.name))}>Открыть</Btn>
+        <Btn size="sm" kind="danger" icon="x" onClick={() => quick({ op: 'stop', session: s.name }, 'Остановлено')} /></div>) : <div className="dim3" style={{ fontSize: 13 }}>Сейчас ни одна сессия не запущена.</div>}
+      <div className="row" style={{ gap: 8, marginTop: 6 }}><input className="input grow" value={chat} placeholder="Название нового чата" onChange={e => setChat(e.target.value)} />
+        <Btn icon="plus" onClick={async () => { await quick({ op: 'new_chat', name: chat.trim() || undefined }, 'Чат запущен'); setChat(''); }}>Новый чат</Btn></div>
+      <div className="dim3" style={{ fontSize: 12.5, marginTop: 4 }}>Новый чат наследует модель и Remote Control{auto ? ' и автозапуск' : ''}. С Remote Control он сразу виден в приложении Claude; «Открыть» показывает его здесь, в терминале.</div>
+    </> : null}
+    {term ? <Modal title="Терминал сервера" wide onClose={() => { setTerm(null); reload(); }} icon={<Icon name="terminal" size={20} color="var(--accent)" />}>
+      <TerminalView extra={`&device=${encodeURIComponent(device.id)}${term}`} ssh={sshTarget(device)} sshCmd={term === '&run=agent-setup' ? 'racklive-agent setup' : term.startsWith('&run=agent-attach') ? 'racklive-agent attach ' + decodeURIComponent(term.split('session=')[1] || '') : ''}
+        onClose={() => { setTerm(null); reload(); }} /></Modal> : null}
+  </>;
+}
+
+function PluginResult({ r, openPlugin }) {
+  const [showLog, setShowLog] = useState(!!r.error);
+  return <div className={'plugin-result' + (r.error ? ' bad' : r.up === false ? ' warn' : '')}>
+    <div className="row" style={{ alignItems: 'flex-start', gap: 8 }}><Icon name={r.error ? 'x' : r.up === false ? 'alert' : 'check'} size={18} />
+      <div className="grow">{r.error ? <><b>Не получилось.</b> {r.error}{r.kept ? '' : '. Всё созданное убрано, роутер в прежнем состоянии.'}</> : r.message}</div></div>
+    {!r.error && !r.routing ? <div style={{ marginTop: 8, fontSize: 13 }}>Хотите направлять сайты через этот туннель удобно? <button type="button" className="linkbtn" onClick={() => openPlugin('hydraroute')}>HydraRoute Neo</button></div> : null}
+    {(r.log || []).length ? <><button type="button" className="linkbtn" onClick={() => setShowLog(!showLog)}>{showLog ? 'Скрыть' : 'Показать'} журнал ({r.log.length})</button>
+      {showLog ? <div className="plugin-log mono">{r.log.map((l, i) => <div key={i} className={l.ok ? '' : 'bad'}>{l.ok ? '✓' : '✗'} {l.cmd}{l.msg ? <span className="dim3"> — {l.msg}</span> : null}</div>)}</div> : null}</> : null}
+  </div>;
+}
+
+function DomainsEditor({ t, call, onClose, onDone }) {
+  const toast = useToast();
+  const [text, setText] = useState('');
+  const save = async () => {
+    try { const r = await call({ op: 'domains', iface: t.iface, name: t.name, domains: text }); toast(r.message); onDone(); } catch (e) { toast(e.message, true); }
+  };
+  return <Modal title={`Сайты через «${t.name}»`} onClose={onClose} footer={<><Btn onClick={onClose}>Отмена</Btn><Btn kind="primary" onClick={save}>Сохранить</Btn></>}>
+    <div className="dim" style={{ fontSize: 13.5 }}>Новый список заменит текущий ({t.domains} сайтов). Пустой список — выключить маршрутизацию через этот туннель.</div>
+    <textarea className="input mono" rows={10} value={text} onChange={e => setText(e.target.value)} placeholder={'youtube.com\ngooglevideo.com'} style={{ fontSize: 12 }} />
+  </Modal>;
+}

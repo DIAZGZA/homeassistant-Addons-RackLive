@@ -1,0 +1,289 @@
+"""TP-Link JetStream switches (T2600G / T1600G / SG3xxx) over the telnet CLI."""
+import re, threading, time
+
+from . import Driver, FIELD_HOST, FIELD_PASS, FIELD_USER
+from .. import cable
+from ..snmp import Snmp, SnmpError, text
+from .snmpgen import bcast_counters, error_counters
+from ..util import DriverError, parse_ranges, telnet_session, uptime_seconds
+
+
+LOOP_YES = ('yes', 'y', 'true', 'loop', 'looped', 'found', 'detected', 'block', 'blocked')
+
+
+def parse_loop(glob, table):
+    """`show loopback-detection global` + `show loopback-detection interface` → the switch's own loop protection:
+    {supported, enabled, interval, recoveryTime, ports: {n: {on, mode, loop, blocked}}, onPorts}.  None when the switch has no such command."""
+    g = re.search(r'global status\s*:\s*(\w+)', glob or '', re.I)
+    if not g:
+        return None
+    iv, rc = re.search(r'interval\s*:\s*(\d+)', glob), re.search(r'recovery time\s*:\s*(\d+)', glob)
+    ports = {}
+    for l in (table or '').splitlines():
+        m = re.match(r'\s*Gi1/0/(\d+)\s+(enable|disable)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)', l)
+        if m:
+            ports[int(m.group(1))] = {'on': m.group(2) == 'enable', 'mode': m.group(3), 'loop': m.group(5).lower() in LOOP_YES, 'blocked': m.group(6).lower() in LOOP_YES}
+    return {'supported': True, 'enabled': g.group(1).lower() == 'enable', 'interval': int(iv.group(1)) if iv else None,
+            'recoveryTime': int(rc.group(1)) if rc else None, 'ports': ports, 'onPorts': sum(1 for p in ports.values() if p['on'])}
+
+
+def runs(nums):
+    """[1, 2, 3, 5] → [(1, 3), (5, 5)]"""
+    out = []
+    for n in sorted(nums):
+        if out and n == out[-1][1] + 1:
+            out[-1] = (out[-1][0], n)
+        else:
+            out.append((n, n))
+    return out
+
+
+class TPLinkJetStream(Driver):
+    id = 'tplink_jetstream'
+    title = 'TP-Link JetStream (telnet)'
+    kind = 'switch'
+    description = 'Управляемый коммутатор: линк, скорость, PoE по портам, VLAN, кто подключён. Нужен включённый telnet.'
+    fields = [FIELD_HOST, dict(FIELD_USER, default='admin'), FIELD_PASS,
+              {'name': 'protectedPorts', 'label': 'Защищённые порты (uplink), через запятую', 'type': 'text',
+               'hint': 'Эти порты нельзя будет выключить из интерфейса, чтобы не потерять связь'},
+              {'name': 'snmpCommunity', 'label': 'SNMP community (для графиков трафика)', 'type': 'password', 'secret': True,
+               'hint': 'Необязательно. На коммутаторе: snmp-server community <имя> read-only'}]
+    actions = [{'id': 'poe_cycle', 'label': 'Перезапустить PoE', 'scope': 'port', 'needs': 'poe',
+                'confirm': 'Устройство на порту {port} обесточится на 10 секунд и перезагрузится. Продолжить?'},
+               {'id': 'port_bounce', 'label': 'Перезапустить порт', 'scope': 'port',
+                'confirm': 'Связь на порту {port} пропадёт на 5 секунд. Продолжить?'},
+               {'id': 'cable_test', 'label': 'Проверить кабель', 'scope': 'port', 'kind': 'cable',
+                'confirm': 'Коммутатор измерит кабель на порту {port}: длину и каждую из 4 пар. '
+                           'Связь с устройством может пропасть на 3–5 секунд. Продолжить?'},
+               {'id': 'loop_guard', 'label': 'Включить защиту от петель', 'scope': 'device',
+                'confirm': 'Коммутатор начнёт проверять петли на портах (кроме защищённых — uplink). Если кабель по ошибке замкнут, порт сам отключится '
+                           'и включится снова через 90 секунд — сеть не «ляжет». Настройка сохранится в самом коммутаторе. Связь не пропадёт. Включить?'},
+               {'id': 'loop_guard_off', 'label': 'Выключить защиту от петель', 'scope': 'device',
+                'confirm': 'Защита от петель на коммутаторе будет выключена — случайная петля снова сможет «положить» сеть. Выключить?'},
+               {'id': 'loop_recover', 'label': 'Вернуть порт после петли', 'scope': 'port',
+                'confirm': 'Порт {port} включится сразу, не дожидаясь автоматического возврата. Если петля осталась, он снова отключится. Продолжить?'}]
+    protected_ports_hint = 'uplink'
+
+    _locks = {}
+
+    shell = ('CLI TP-Link JetStream по telnet (enable уже выполнен): show …; настройки: configure → interface gigabitEthernet 1/0/N → … → end; '
+             'сохранить: copy running-config startup-config')
+
+    def command(self, cfg, cmd):
+        cmds = [c.strip() for c in cmd.split('\n') if c.strip()]
+        out = self._cli(cfg, cmds)
+        return '\n\n'.join(f'> {c}\n{(out.get(c) or "").strip()}' for c in cmds) if isinstance(out, dict) else str(out)
+
+    def _cli(self, cfg, cmds, wait=1.0):
+        # one telnet session per switch at a time: the switch drops/mixes parallel CLI sessions
+        lock = self._locks.setdefault(cfg['host'], threading.Lock())
+        with lock:
+            return telnet_session(cfg['host'], cfg.get('username') or 'admin', cfg.get('password', ''),
+                                  ['enable', 'terminal length 0'] + cmds, wait=wait)
+
+    def _run_checked(self, cfg, cmds):
+        """Runs config commands, retries once, raises if the switch reported an error."""
+        for attempt in range(2):
+            out = self._cli(cfg, ['configure'] + cmds + ['end'])
+            errs = [f'{c}: {o.strip().splitlines()[-2] if len(o.strip().splitlines()) > 1 else o.strip()}'
+                    for c, o in out.items() if c in cmds and 'Error' in o]
+            if not errs and all(c in out for c in cmds):
+                return out
+            time.sleep(2)
+        raise DriverError('коммутатор не выполнил команду: ' + '; '.join(errs)[:200])
+
+    def poll(self, cfg):
+        o = self._cli(cfg, ['show system-info', 'show interface status', 'show power inline information interface',
+                            'show mac address-table', 'show running-config', 'show loopback-detection global', 'show loopback-detection interface'])
+        info = {}
+        for l in o['show system-info'].splitlines():
+            m = re.match(r'\s*([A-Za-z][A-Za-z ]+?)\s+-\s+(.*)', l)
+            if m:
+                info[m.group(1).strip()] = m.group(2).strip()
+        if not info:
+            raise DriverError('коммутатор не ответил на команды CLI')
+        ports = {}
+        for l in o['show interface status'].splitlines():
+            m = re.match(r'\s*Gi1/0/(\d+)\s+(LinkUp|LinkDown)\s+(\S+)\s+\S+\s+\S+\s+(\S+)', l)
+            if m:
+                n, sp = int(m.group(1)), m.group(3).rstrip('M')
+                ports[n] = {'n': n, 'name': 'Gi1/0/%d' % n, 'kind': 'sfp' if m.group(4) == 'Fiber' else 'rj45', 'link': m.group(2) == 'LinkUp',
+                            'speed': int(sp) if sp.isdigit() else 0, 'poeW': 0.0, 'poe': False, 'label': '', 'vlansU': [], 'vlansT': [],
+                            'pvid': 1, 'peers': [], 'disabled': False}
+        poe_total = 0.0
+        for l in o['show power inline information interface'].splitlines():
+            m = re.match(r'\s*Gi1/0/(\d+)\s+([\d.]+)\s+\d+\s+[\d.]+\s+(.+?)\s+(ON|OFF)\s*$', l)
+            if m and int(m.group(1)) in ports:
+                p = ports[int(m.group(1))]
+                p['poeW'] = float(m.group(2))
+                p['poe'] = True
+                p['poeOn'] = m.group(4) == 'ON'
+                poe_total += p['poeW']
+        for l in o['show mac address-table'].splitlines():
+            m = re.match(r'\s*([0-9a-f:]{17})\s+(\d+)\s+Gi1/0/(\d+)', l)
+            if m and int(m.group(3)) in ports:
+                ports[int(m.group(3))]['peers'].append({'mac': m.group(1), 'vlan': int(m.group(2))})
+        cur, vlan_names, cur_vlan = None, {}, None
+        for l in o['show running-config'].splitlines():
+            s = l.strip()
+            mv = re.match(r'vlan (\d+)$', s)
+            if mv:
+                cur_vlan, cur = int(mv.group(1)), None
+                continue
+            if cur_vlan and s.startswith('name '):
+                vlan_names[cur_vlan] = s[5:].strip('"')
+                continue
+            m = re.match(r'interface gigabitEthernet 1/0/(\d+)', s)
+            if m:
+                cur, cur_vlan = int(m.group(1)), None
+                continue
+            if cur is None or cur not in ports:
+                continue
+            if s.startswith('description'):
+                ports[cur]['label'] = s.split(' ', 1)[1].strip('"')
+            elif s == 'shutdown':
+                ports[cur]['disabled'] = True
+            m = re.match(r'switchport general allowed vlan (\S+) (tagged|untagged)', s)
+            if m:
+                ports[cur]['vlansT' if m.group(2) == 'tagged' else 'vlansU'] += parse_ranges(m.group(1))
+            m = re.match(r'switchport pvid (\d+)', s)
+            if m:
+                ports[cur]['pvid'] = int(m.group(1))
+        for p in ports.values():
+            if not p['vlansU']:
+                p['vlansU'] = [p['pvid']]
+        plist = [ports[k] for k in sorted(ports)]
+        if cfg.get('snmpCommunity'):
+            try:
+                s = Snmp(cfg['host'], cfg['snmpCommunity'], timeout=2, retries=1)
+                descr = s.table('1.3.6.1.2.1.2.2.1.2')
+                hin, hout = s.table('1.3.6.1.2.1.31.1.1.1.6'), s.table('1.3.6.1.2.1.31.1.1.1.10')
+                errs, bc = error_counters(s), bcast_counters(s)
+                for idx, d in descr.items():
+                    m = re.search(r'1/0/(\d+)$', text(d))
+                    if m and int(m.group(1)) in ports:
+                        ports[int(m.group(1))].update(rxBytes=hin.get(idx), txBytes=hout.get(idx), bcastPkts=bc.get(idx), **errs.get(idx, {}))
+            except SnmpError:
+                pass
+        up = sum(1 for p in plist if p['link'])
+        guard = parse_loop(o.get('show loopback-detection global'), o.get('show loopback-detection interface'))       # the switch's own loop protection
+        for n, v in ((guard or {}).get('ports') or {}).items():
+            if n in ports:
+                ports[n].update(loopOn=v['on'], loopDetected=v['loop'], loopBlocked=v['blocked'])
+        return {'status': 'online', 'loopGuard': guard,
+                'summary': {'model': info.get('System Description') or info.get('Hardware Version'), 'fw': info.get('Software Version'),
+                            'uptime': uptime_seconds(info.get('Running Time')), 'ip': cfg['host'],
+                            'mac': (info.get('Mac Address') or '').replace('-', ':').lower()},
+                'ports': plist,
+                'vlanNames': vlan_names,
+                'metrics': [{'label': 'Порты с линком', 'value': f'{up}/{len(plist)}'},
+                            {'label': 'PoE', 'value': round(poe_total, 1), 'unit': 'Вт'}],
+                'sections': [{'title': 'Коммутатор', 'rows': [['Аппаратная версия', info.get('Hardware Version', '—')],
+                                                               ['Серийный номер', info.get('Serial Number', '—')],
+                                                               ['Имя', info.get('System Name', '—')]]}]}
+
+    def backup(self, cfg):
+        """running-config as text (prompt and echo lines removed) — what rackd/backups.py versions."""
+        out = self._cli(cfg, ['show running-config']).get('show running-config', '')
+        lines = [l.rstrip() for l in out.replace('\r', '').split('\n')]
+        lines = [l for l in lines if l.strip() and not re.match(r'^\S+[#>]\s*$', l) and l.strip() != 'show running-config']
+        if len(lines) < 5:
+            raise DriverError('коммутатор не отдал конфигурацию')
+        return '\n'.join(lines) + '\n'
+
+    def _save(self, cfg):
+        """copy running-config startup-config: a protection that vanishes at the next reboot is no protection"""
+        out = ''.join(self._cli(cfg, ['copy running-config startup-config'], wait=4).values())
+        if re.search(r'fail|error', out, re.I) and not re.search(r'succeed|success|ok', out, re.I):
+            raise DriverError('настройка применена, но сохранить её в коммутаторе не удалось — после перезагрузки она пропадёт')
+
+    def loop_guard(self, cfg, on, only=None):
+        """Loop protection of the switch itself (loopback-detection): every port except the protected (uplink) ones; a looped port is blocked and
+        comes back after the recovery time. only=[ports] limits it (used by tests)."""
+        txt = ''.join(self._cli(cfg, ['show interface status']).values())
+        allp = sorted({int(m.group(1)) for l in txt.splitlines() for m in [re.match(r'\s*Gi1/0/(\d+)\s+(LinkUp|LinkDown)', l)] if m})
+        prot = {int(x) for x in str(cfg.get('protectedPorts') or '').replace(' ', '').split(',') if x.isdigit()}
+        ports = [p for p in allp if p not in prot and (not only or p in only)]
+        if not allp:
+            raise DriverError('коммутатор не показал список портов')
+        if not on:
+            self._run_checked(cfg, ['no loopback-detection'])
+            self._save(cfg)
+            return 'Защита от петель выключена'
+        cmds = ['loopback-detection']
+        for a, b in runs(ports):
+            cmds += [f'interface range gigabitEthernet 1/0/{a}-{b}' if a != b else f'interface gigabitEthernet 1/0/{a}',
+                     'loopback-detection', 'loopback-detection config process-mode port-based recovery-mode auto', 'exit']
+        self._run_checked(cfg, cmds)
+        o = self._cli(cfg, ['show loopback-detection global', 'show loopback-detection interface'])
+        g = parse_loop(o.get('show loopback-detection global'), o.get('show loopback-detection interface'))
+        missing = [p for p in ports if not ((g or {}).get('ports') or {}).get(p, {}).get('on')]
+        if not g or not g['enabled'] or missing:
+            raise DriverError('коммутатор не включил защиту' + (f' на портах {", ".join(map(str, missing))}' if missing else ''))
+        self._save(cfg)
+        span = ', '.join(f'{a}–{b}' if a != b else str(a) for a, b in runs(ports))
+        return f"Защита от петель включена на портах {span}" + (f" (порты {', '.join(map(str, sorted(prot)))} — uplink, не трогаем)" if prot else '')
+
+    def action(self, cfg, action_id, params):
+        if action_id == 'loop_guard':
+            return self.loop_guard(cfg, True, params.get('only'))
+        if action_id == 'loop_guard_off':
+            return self.loop_guard(cfg, False)
+        port = int(params.get('port') or 0)
+        if not 1 <= port <= 64:
+            raise DriverError('неверный номер порта')
+        if port in [int(x) for x in str(cfg.get('protectedPorts') or '').replace(' ', '').split(',') if x.isdigit()]:
+            raise DriverError(f'порт {port} защищён (uplink) — его нельзя отключать отсюда')
+        iface = f'interface gigabitEthernet 1/0/{port}'
+        if action_id == 'cable_test':
+            return self.cable_test(cfg, port)
+        if action_id == 'loop_recover':
+            self._run_checked(cfg, [iface, 'loopback-detection recover'])
+            return f'Порт {port}: возврат после петли выполнен'
+        if action_id == 'poe_cycle':
+            self._run_checked(cfg, [iface, 'power inline supply disable'])
+            time.sleep(8)
+            self._run_checked(cfg, [iface, 'power inline supply enable'])
+            out = self._cli(cfg, [f'show power inline configuration interface gigabitEthernet 1/0/{port}'])
+            txt = ''.join(out.values())
+            if re.search(rf'Gi1/0/{port}\s+Disable', txt):
+                self._run_checked(cfg, [iface, 'power inline supply enable'])
+            return f'PoE на порту {port} перезапущено — устройство загружается'
+        if action_id == 'port_bounce':
+            self._run_checked(cfg, [iface, 'shutdown'])
+            time.sleep(4)
+            self._run_checked(cfg, [iface, 'no shutdown'])
+            out = self._cli(cfg, ['show running-config interface gigabitEthernet 1/0/%d' % port])
+            if re.search(r'^\s*shutdown\s*$', ''.join(out.values()), re.M):
+                self._run_checked(cfg, [iface, 'no shutdown'])
+            return f'Порт {port} перезапущен'
+        return super().action(cfg, action_id, params)
+
+    def cable_test(self, cfg, port):
+        """Built-in TDR (VCT). Two shots, because a single one on a live link often misreads a pair."""
+        st_cmd = f'show interface status gigabitEthernet 1/0/{port}'
+        o = self._cli(cfg, [st_cmd])
+        m = re.search(r'Gi1/0/\d+\s+(LinkUp|LinkDown)\s+(\S+)', ''.join(o.values()))
+        link, speed = bool(m and m.group(1) == 'LinkUp'), int(m.group(2).rstrip('M')) if m and m.group(2).rstrip('M').isdigit() else 0
+        runs = []
+        for i, cmd in enumerate([f'show cable-diagnostics interface gigabitEthernet 1/0/{port}',
+                                 f'show cable-diagnostics careful interface gigabitEthernet 1/0/{port}']):
+            if i:
+                time.sleep(3)
+            txt = ''.join(self._cli(cfg, [cmd], wait=3).values())
+            run = []
+            for l in txt.splitlines():
+                pm = re.search(r'Pair-([A-D])\s+(\S+)\s+(\S+)(?:\s+\(\S+\s*\S*\))?\s+(\S+)', l)
+                if not pm:
+                    continue
+                status = pm.group(2).lower()
+                num = next((x for x in (pm.group(3), pm.group(4)) if x.isdigit()), None)
+                run.append({'pair': pm.group(1), 'len': int(num) if num else None,
+                            'status': {'normal': 'normal', 'open': 'open', 'short': 'short', 'impedance': 'impedance',
+                                       'crosstalk': 'crosstalk', 'mismatch': 'impedance'}.get(status, 'unknown')})
+            if run:
+                runs.append(run)
+        if not runs:
+            raise DriverError('коммутатор не вернул результат теста кабеля')
+        res = cable.analyze(runs, link, speed)
+        return {'message': f'Порт {port}: ' + res['text'], 'cable': res, 'port': port}
