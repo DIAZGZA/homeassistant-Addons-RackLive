@@ -1,4 +1,5 @@
-ARG BUILD_FROM
+# Se define la imagen oficial de Home Assistant para amd64 como base por defecto si la variable está vacía
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM ${BUILD_FROM}
 
 # Instalar dependencias del sistema requeridas
@@ -15,7 +16,7 @@ WORKDIR /app
 COPY EnrutadorApp /app
 
 # Instalar dependencias de Python si existe un archivo requirements.txt
-RUN if [ -f requirements.txt ]; then pip3 install --no-cache-dir -r requirements.txt; fi
+RUN if [ -f /app/requirements.txt ]; then pip3 install --no-cache-dir -r /app/requirements.txt; fi
 
 # Copiar el script de inicio y darle permisos de ejecucion
 COPY run.sh /
