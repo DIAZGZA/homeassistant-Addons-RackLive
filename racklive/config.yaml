@@ -16,6 +16,6 @@ ingress_port: 8000
 options:
   log_level: "info"
 schema:
-  log_level: "str^(trace^|debug^|info^|warning^|error^|fatal^)"
+  log_level: "list(trace|debug|info|warning|error|fatal|panic)"
 ports:
   8000/tcp: 8000
